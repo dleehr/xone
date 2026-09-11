@@ -1562,6 +1562,17 @@ static int gip_handle_pkt_firmware(struct gip_client *client, void *data,
 static int gip_dispatch_pkt(struct gip_client *client,
 			    struct gip_header *hdr, void *data, u32 len)
 {
+	/*
+	 * DIAGNOSTIC (temporary): log every internal command as it arrives.
+	 * The switch below silently drops anything not in its case list, and
+	 * gip_handle_pkt_status() doesn't log its normal (connected) path, so
+	 * without this there is no way to see what commands a device is
+	 * actually sending. Remove before merging upstream.
+	 */
+	if (hdr->options & GIP_OPT_INTERNAL)
+		gip_dbg(client, "%s: internal cmd=0x%02x, options=0x%02x, len=%u\n",
+			__func__, hdr->command, hdr->options, len);
+
 	if (hdr->options & GIP_OPT_INTERNAL) {
 		switch (hdr->command) {
 		case GIP_CMD_ACKNOWLEDGE:
@@ -1585,6 +1596,8 @@ static int gip_dispatch_pkt(struct gip_client *client,
 		case GIP_CMD_EXTENDED:
 			return gip_handle_pkt_extended(client, data, len);
 		default:
+			gip_dbg(client, "%s: unknown internal cmd=0x%02x\n",
+				__func__, hdr->command);
 			return 0;
 		}
 	}
