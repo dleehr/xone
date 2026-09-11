@@ -68,8 +68,8 @@ struct gip_jaguar_pkt_input {
 	u8 frets_lower;
 	u8 autocal_light;
 	__le16 autocal_audio;
-	__le16 joystick_x;	/* mapped straight to ABS_RX, added to whammy */
-	__le16 joystick_y;	/* mapped straight to ABS_RY (RPCS3's pickup axis) */
+	__le16 joystick_x;	/* unused: player doesn't use the neck stick */
+	__le16 joystick_y;	/* mapped to ABS_RY (RPCS3's pickup axis) */
 } __packed;
 
 struct gip_jaguar {
@@ -101,7 +101,7 @@ static int gip_jaguar_init_input(struct gip_jaguar *guitar)
 	input_set_capability(dev, EV_KEY, BTN_TL);	/* orange fret */
 	input_set_capability(dev, EV_KEY, BTN_TR);	/* tilt (digital, see above) */
 	input_set_abs_params(dev, ABS_Z, 0, 255, 0, 0);	/* solo modifier */
-	input_set_abs_params(dev, ABS_RX, -32768, 32767, 0, 0);	/* whammy + stick X */
+	input_set_abs_params(dev, ABS_RX, 0, 255, 0, 0);		/* whammy */
 	input_set_abs_params(dev, ABS_RY, -32768, 32767, 0, 0);	/* stick Y (RPCS3's pickup axis) */
 	input_set_abs_params(dev, ABS_HAT0X, -1, 1, 0, 0);
 	input_set_abs_params(dev, ABS_HAT0Y, -1, 1, 0, 0);
@@ -151,7 +151,6 @@ static int gip_jaguar_op_input(struct gip_client *client, void *data, u32 len)
 	u16 buttons;
 	u8 frets;
 	bool solo;
-	s32 rx;
 
 	if (len < sizeof(*pkt))
 		return -EINVAL;
@@ -179,26 +178,15 @@ static int gip_jaguar_op_input(struct gip_client *client, void *data, u32 len)
 	 *   solo modifier -> ABS_Z, positive = active           (L2 default)
 	 *   tilt          -> BTN_TR, thresholded                (R1 default)
 	 *   whammy        -> ABS_RX, positive = pressed          (RS default)
-	 *   pickup switch -> ABS_RY, up = negative                (RS default)
+	 *   pickup switch -> ABS_RY                                (RS default)
 	 * This particular Riffmaster has no physical pickup switch (unlike
 	 * the real Jaguar/Stratocaster, whose protocol byte 4 it reserves
 	 * anyway) - reading pkt->pickup here would just be dead, constant
-	 * data. Rather than synthesize something from it, the neck
-	 * thumbstick - unused by the player otherwise - is mapped straight
-	 * onto the right stick: X onto ABS_RX (added to whammy, see below),
-	 * Y onto ABS_RY, standing in for a pickup switch that doesn't exist
-	 * on this hardware. The stick reports up as positive; negated below
-	 * to match RPCS3's up = negative default convention for this axis.
-	 *
-	 * ABS_RX carries both whammy and the stick's X deflection added
-	 * together and clamped, so nudging the stick right also reads as
-	 * some amount of whammy - acceptable overlap since the player
-	 * doesn't otherwise use the stick. Note the scales don't match:
-	 * whammy only contributes up to 255 against the stick's ~32767
-	 * range, so if this guitar's stick has much physical throw, stick
-	 * motion could dominate over the real whammy bar. Verify on
-	 * hardware; rework as a scaled max() of the two instead of a sum
-	 * if whammy ends up getting drowned out.
+	 * data. The neck thumbstick's Y axis - unused by the player
+	 * otherwise - is reported on ABS_RY instead, standing in for a
+	 * pickup switch that doesn't exist on this hardware. Reported
+	 * as-is, unnegated; whichever direction ends up meaning what isn't
+	 * important here.
 	 */
 	frets = pkt->frets_upper | pkt->frets_lower;
 	solo = pkt->frets_lower || (buttons & GIP_JA_BTN_SOLO);
@@ -212,13 +200,8 @@ static int gip_jaguar_op_input(struct gip_client *client, void *data, u32 len)
 	input_report_key(dev, BTN_TL, frets & GIP_JA_FRET_ORANGE);
 	input_report_key(dev, BTN_TR, pkt->tilt > GIP_JA_TILT_THRESHOLD);
 	input_report_abs(dev, ABS_Z, solo ? 255 : 0);
-	rx = (s32)pkt->whammy + (s16)le16_to_cpu(pkt->joystick_x);
-	if (rx > 32767)
-		rx = 32767;
-	else if (rx < -32768)
-		rx = -32768;
-	input_report_abs(dev, ABS_RX, rx);
-	input_report_abs(dev, ABS_RY, -(s16)le16_to_cpu(pkt->joystick_y));
+	input_report_abs(dev, ABS_RX, pkt->whammy);
+	input_report_abs(dev, ABS_RY, (s16)le16_to_cpu(pkt->joystick_y));
 	input_report_abs(dev, ABS_HAT0X, !!(buttons & GIP_JA_BTN_DPAD_R) -
 					 !!(buttons & GIP_JA_BTN_DPAD_L));
 	input_report_abs(dev, ABS_HAT0Y, !!(buttons & GIP_JA_BTN_DPAD_D) -
