@@ -18,19 +18,30 @@ enum gip_jaguar_button {
 	GIP_JA_BTN_DPAD_D = BIT(9),
 	GIP_JA_BTN_DPAD_L = BIT(10),
 	GIP_JA_BTN_DPAD_R = BIT(11),
+	/*
+	 * Documented as "solo fret flag / Riffmaster joystick click". On a
+	 * real Jaguar/Stratocaster this bit coincides with any lower/solo
+	 * fret being held; on the Riffmaster, which has no such correlation
+	 * requirement, it's simply the neck thumbstick's click button. Report
+	 * it as its own control either way rather than using it to reinterpret
+	 * fret state (see below) - useful on its own as a bindable "solo"
+	 * modifier button in frontends that model Rock Band guitars that way
+	 * (e.g. RPCS3's single "Solo Modifier" binding).
+	 */
+	GIP_JA_BTN_SOLO = BIT(14),
 };
 
 /*
  * Fret state is intentionally *not* read from the "flag" bits in the
- * buttons word (old bits 4-7 and 12, with bit 14 selecting upper vs.
- * lower/solo row). On a real Jaguar/Stratocaster those flag bits work
- * fine, but they're documented as unreliable ("not recommended") and
- * overlap with other input on compatible devices: on the PDP Riffmaster,
- * which announces this same GIP class, bit 14 is the neck thumbstick's
- * click button rather than a fret-row selector, so relying on it there
- * misreports whichever fret is currently held as soon as the stick is
- * clicked (or bumped). The upper/lower fret bitmasks below don't have
- * this ambiguity and work identically on both devices.
+ * buttons word (old bits 4-7 and 12, disambiguated by GIP_JA_BTN_SOLO
+ * above to select upper vs. lower/solo row). On a real Jaguar/Stratocaster
+ * that works fine, but the flag bits are documented as unreliable ("not
+ * recommended"), and on the PDP Riffmaster - which announces this same
+ * GIP class - GIP_JA_BTN_SOLO doesn't reliably correlate with which row
+ * is held (it's a separate thumbstick click), so using it to reinterpret
+ * fret state there misreports whichever fret is currently held as soon as
+ * the stick is clicked or bumped. The upper/lower fret bitmasks below
+ * don't have this ambiguity and work identically on both devices.
  */
 enum gip_jaguar_fret_mask {
 	GIP_JA_FRET_GREEN = BIT(0),
@@ -74,6 +85,7 @@ static int gip_jaguar_init_input(struct gip_jaguar *guitar)
 	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY8);
 	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY9);
 	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY10);
+	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY11);
 	input_set_abs_params(dev, ABS_Y, 0, 255, 0, 0);
 	input_set_abs_params(dev, ABS_Z, 0, 255, 0, 0);
 	input_set_abs_params(dev, ABS_HAT0X, -1, 1, 0, 0);
@@ -150,6 +162,8 @@ static int gip_jaguar_op_input(struct gip_client *client, void *data, u32 len)
 			 pkt->frets_lower & GIP_JA_FRET_BLUE);
 	input_report_key(dev, BTN_TRIGGER_HAPPY10,
 			 pkt->frets_lower & GIP_JA_FRET_ORANGE);
+	input_report_key(dev, BTN_TRIGGER_HAPPY11,
+			 buttons & GIP_JA_BTN_SOLO);
 	input_report_abs(dev, ABS_Y, pkt->whammy);
 	input_report_abs(dev, ABS_Z, pkt->tilt);
 	input_report_abs(dev, ABS_HAT0X, !!(buttons & GIP_JA_BTN_DPAD_R) -
