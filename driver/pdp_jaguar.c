@@ -63,9 +63,13 @@ struct gip_jaguar_pkt_input {
 	__le16 buttons;
 	u8 tilt;
 	u8 whammy;
-	u8 pickup;
+	u8 pickup;		/* unused: no physical switch on this Riffmaster */
 	u8 frets_upper;
 	u8 frets_lower;
+	u8 autocal_light;
+	__le16 autocal_audio;
+	__le16 joystick_x;	/* unused: player doesn't use the neck stick */
+	__le16 joystick_y;	/* repurposed as the pickup switch, see below */
 } __packed;
 
 struct gip_jaguar {
@@ -98,7 +102,7 @@ static int gip_jaguar_init_input(struct gip_jaguar *guitar)
 	input_set_capability(dev, EV_KEY, BTN_TR);	/* tilt (digital, see above) */
 	input_set_abs_params(dev, ABS_Z, 0, 255, 0, 0);	/* solo modifier */
 	input_set_abs_params(dev, ABS_RX, 0, 255, 0, 0);	/* whammy */
-	input_set_abs_params(dev, ABS_RY, -128, 128, 0, 0);	/* pickup switch */
+	input_set_abs_params(dev, ABS_RY, -32768, 32767, 0, 0);	/* pickup, via neck stick */
 	input_set_abs_params(dev, ABS_HAT0X, -1, 1, 0, 0);
 	input_set_abs_params(dev, ABS_HAT0Y, -1, 1, 0, 0);
 
@@ -174,10 +178,15 @@ static int gip_jaguar_op_input(struct gip_client *client, void *data, u32 len)
 	 *   solo modifier -> ABS_Z, positive = active           (L2 default)
 	 *   tilt          -> BTN_TR, thresholded                (R1 default)
 	 *   whammy        -> ABS_RX, positive = pressed          (RS default)
-	 *   pickup switch -> ABS_RY, centered, up = negative     (RS default)
-	 * The neck thumbstick itself is unused by the player in this setup,
-	 * so its axis slot (right stick) is repurposed to carry the pickup
-	 * switch instead of real stick deflection.
+	 *   pickup switch -> ABS_RY, up = negative                (RS default)
+	 * This particular Riffmaster has no physical pickup switch (unlike
+	 * the real Jaguar/Stratocaster, whose protocol byte 4 it reserves
+	 * anyway) - reading pkt->pickup here would just be dead, constant
+	 * data. So instead ABS_RY is fed from the neck thumbstick's real Y
+	 * deflection, which the player doesn't otherwise use: flicking the
+	 * stick stands in for a pickup switch that doesn't exist on this
+	 * hardware. The stick reports up as positive; negated below to match
+	 * RPCS3's up = negative default convention for this axis.
 	 */
 	frets = pkt->frets_upper | pkt->frets_lower;
 	solo = pkt->frets_lower || (buttons & GIP_JA_BTN_SOLO);
@@ -192,8 +201,7 @@ static int gip_jaguar_op_input(struct gip_client *client, void *data, u32 len)
 	input_report_key(dev, BTN_TR, pkt->tilt > GIP_JA_TILT_THRESHOLD);
 	input_report_abs(dev, ABS_Z, solo ? 255 : 0);
 	input_report_abs(dev, ABS_RX, pkt->whammy);
-	/* pickup notch is 0-4, encoded in the packet's top 4 bits */
-	input_report_abs(dev, ABS_RY, ((int)(pkt->pickup >> 4) - 2) * 64);
+	input_report_abs(dev, ABS_RY, -(s16)le16_to_cpu(pkt->joystick_y));
 	input_report_abs(dev, ABS_HAT0X, !!(buttons & GIP_JA_BTN_DPAD_R) -
 					 !!(buttons & GIP_JA_BTN_DPAD_L));
 	input_report_abs(dev, ABS_HAT0Y, !!(buttons & GIP_JA_BTN_DPAD_D) -
