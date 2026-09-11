@@ -32,16 +32,15 @@ enum gip_jaguar_button {
 };
 
 /*
- * Fret state is intentionally *not* read from the "flag" bits in the
- * buttons word (old bits 4-7 and 12, disambiguated by GIP_JA_BTN_SOLO
- * above to select upper vs. lower/solo row). On a real Jaguar/Stratocaster
- * that works fine, but the flag bits are documented as unreliable ("not
- * recommended"), and on the PDP Riffmaster - which announces this same
- * GIP class - GIP_JA_BTN_SOLO doesn't reliably correlate with which row
- * is held (it's a separate thumbstick click), so using it to reinterpret
- * fret state there misreports whichever fret is currently held as soon as
- * the stick is clicked or bumped. The upper/lower fret bitmasks below
- * don't have this ambiguity and work identically on both devices.
+ * Fret state is read from the byte 5/6 upper and lower/solo bitmasks
+ * (frets_upper/frets_lower below), not the "flag" bits in the buttons
+ * word (old bits 4-7 and 12, disambiguated by bit 14 into upper vs.
+ * lower/solo row). Those flag bits are documented as unreliable ("not
+ * recommended") on any device, and on the PDP Riffmaster specifically,
+ * bit 14 is the neck thumbstick's click rather than a fret-row selector,
+ * so relying on it there misreports whichever fret is currently held as
+ * soon as the stick is clicked or bumped. The bitmasks below don't have
+ * this ambiguity on either device.
  */
 enum gip_jaguar_fret_mask {
 	GIP_JA_FRET_GREEN = BIT(0),
@@ -81,11 +80,6 @@ static int gip_jaguar_init_input(struct gip_jaguar *guitar)
 	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY4);
 	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY5);
 	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY6);
-	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY7);
-	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY8);
-	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY9);
-	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY10);
-	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY11);
 	input_set_abs_params(dev, ABS_Y, 0, 255, 0, 0);
 	input_set_abs_params(dev, ABS_Z, 0, 255, 0, 0);
 	input_set_abs_params(dev, ABS_HAT0X, -1, 1, 0, 0);
@@ -134,36 +128,38 @@ static int gip_jaguar_op_input(struct gip_client *client, void *data, u32 len)
 	struct gip_jaguar_pkt_input *pkt = data;
 	struct input_dev *dev = guitar->input.dev;
 	u16 buttons;
+	u8 frets;
+	bool solo;
 
 	if (len < sizeof(*pkt))
 		return -EINVAL;
 
 	buttons = le16_to_cpu(pkt->buttons);
 
+	/*
+	 * Personal fork policy, not upstream-worthy: merge the upper and
+	 * lower/solo fret rows into a single 5-button "fret held, either
+	 * row" signal, and expose one "solo requested" modifier instead of
+	 * 10 separate fret codes. This matches frontends that model Rock
+	 * Band guitars with 5 frets + a single solo modifier rather than 10
+	 * distinct fret buttons (e.g. RPCS3's harmonix_rockband_guitar pad
+	 * type, which only exposes Cross/Circle/Square/Triangle/L1 for
+	 * frets and a single L2 "Solo Modifier"). The modifier reflects
+	 * either row physically being played (frets_lower != 0), so playing
+	 * the real solo row still works, with the thumbstick click as a
+	 * bonus manual shortcut.
+	 */
+	frets = pkt->frets_upper | pkt->frets_lower;
+	solo = pkt->frets_lower || (buttons & GIP_JA_BTN_SOLO);
+
 	input_report_key(dev, BTN_START, buttons & GIP_JA_BTN_MENU);
 	input_report_key(dev, BTN_SELECT, buttons & GIP_JA_BTN_VIEW);
-	input_report_key(dev, BTN_TRIGGER_HAPPY1,
-			 pkt->frets_upper & GIP_JA_FRET_GREEN);
-	input_report_key(dev, BTN_TRIGGER_HAPPY2,
-			 pkt->frets_upper & GIP_JA_FRET_RED);
-	input_report_key(dev, BTN_TRIGGER_HAPPY3,
-			 pkt->frets_upper & GIP_JA_FRET_YELLOW);
-	input_report_key(dev, BTN_TRIGGER_HAPPY4,
-			 pkt->frets_upper & GIP_JA_FRET_BLUE);
-	input_report_key(dev, BTN_TRIGGER_HAPPY5,
-			 pkt->frets_upper & GIP_JA_FRET_ORANGE);
-	input_report_key(dev, BTN_TRIGGER_HAPPY6,
-			 pkt->frets_lower & GIP_JA_FRET_GREEN);
-	input_report_key(dev, BTN_TRIGGER_HAPPY7,
-			 pkt->frets_lower & GIP_JA_FRET_RED);
-	input_report_key(dev, BTN_TRIGGER_HAPPY8,
-			 pkt->frets_lower & GIP_JA_FRET_YELLOW);
-	input_report_key(dev, BTN_TRIGGER_HAPPY9,
-			 pkt->frets_lower & GIP_JA_FRET_BLUE);
-	input_report_key(dev, BTN_TRIGGER_HAPPY10,
-			 pkt->frets_lower & GIP_JA_FRET_ORANGE);
-	input_report_key(dev, BTN_TRIGGER_HAPPY11,
-			 buttons & GIP_JA_BTN_SOLO);
+	input_report_key(dev, BTN_TRIGGER_HAPPY1, frets & GIP_JA_FRET_GREEN);
+	input_report_key(dev, BTN_TRIGGER_HAPPY2, frets & GIP_JA_FRET_RED);
+	input_report_key(dev, BTN_TRIGGER_HAPPY3, frets & GIP_JA_FRET_YELLOW);
+	input_report_key(dev, BTN_TRIGGER_HAPPY4, frets & GIP_JA_FRET_BLUE);
+	input_report_key(dev, BTN_TRIGGER_HAPPY5, frets & GIP_JA_FRET_ORANGE);
+	input_report_key(dev, BTN_TRIGGER_HAPPY6, solo);
 	input_report_abs(dev, ABS_Y, pkt->whammy);
 	input_report_abs(dev, ABS_Z, pkt->tilt);
 	input_report_abs(dev, ABS_HAT0X, !!(buttons & GIP_JA_BTN_DPAD_R) -
