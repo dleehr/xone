@@ -20,6 +20,16 @@
  */
 #define GIP_JA_TILT_THRESHOLD 128
 
+/*
+ * EXPERIMENTAL: whammy thresholded to a plain on/off, like tilt and the
+ * solo modifier, instead of reported as a continuous value - testing
+ * whether RB3 expects whammy as a simple press rather than a magnitude,
+ * same as those two working controls. Low threshold so a light touch
+ * still registers. Revert to a continuous pkt->whammy passthrough if
+ * this doesn't change anything either.
+ */
+#define GIP_JA_WHAMMY_THRESHOLD 16
+
 enum gip_jaguar_button {
 	GIP_JA_BTN_MENU = BIT(2),
 	GIP_JA_BTN_VIEW = BIT(3),
@@ -101,7 +111,7 @@ static int gip_jaguar_init_input(struct gip_jaguar *guitar)
 	input_set_capability(dev, EV_KEY, BTN_TL);	/* orange fret */
 	input_set_capability(dev, EV_KEY, BTN_TR);	/* tilt (digital, see above) */
 	input_set_abs_params(dev, ABS_Z, 0, 255, 0, 0);	/* solo modifier */
-	input_set_abs_params(dev, ABS_RX, 0, 65535, 0, 0);		/* whammy */
+	input_set_abs_params(dev, ABS_RX, 0, 255, 0, 0);		/* whammy */
 	input_set_abs_params(dev, ABS_RY, -32768, 32767, 0, 0);	/* stick Y (RPCS3's pickup axis) */
 	input_set_abs_params(dev, ABS_HAT0X, -1, 1, 0, 0);
 	input_set_abs_params(dev, ABS_HAT0Y, -1, 1, 0, 0);
@@ -178,10 +188,15 @@ static int gip_jaguar_op_input(struct gip_client *client, void *data, u32 len)
 	 *   solo modifier -> ABS_Z, positive = active           (L2 default)
 	 *   tilt          -> BTN_TR, thresholded                (R1 default)
 	 *   whammy        -> ABS_RX, positive = pressed          (RS default)
-	 *     - EXPERIMENTAL: reported as 0-65535 (raw byte * 257) instead of
-	 *       0-255, to test whether whammy's lack of in-game effect in RB3
-	 *       is a range/resolution issue. Revert to a bare 0-255 passthrough
-	 *       if this doesn't change anything.
+	 *     - EXPERIMENTAL: thresholded to a plain 0-or-255, like tilt and
+	 *       the solo modifier, instead of a continuous value. Neither a
+	 *       0-255 nor a 0-65535 continuous passthrough had any in-game
+	 *       effect in RB3, despite RPCS3's own pad settings screen showing
+	 *       the raw signal moving correctly across the full range - so
+	 *       the working theory is that RB3 may expect whammy as a simple
+	 *       press, the same as the two other axis-slot controls that do
+	 *       work. Revert to a continuous pkt->whammy passthrough if this
+	 *       doesn't change anything either.
 	 *   pickup switch -> ABS_RY                                (RS default)
 	 * This particular Riffmaster has no physical pickup switch (unlike
 	 * the real Jaguar/Stratocaster, whose protocol byte 4 it reserves
@@ -204,8 +219,7 @@ static int gip_jaguar_op_input(struct gip_client *client, void *data, u32 len)
 	input_report_key(dev, BTN_TL, frets & GIP_JA_FRET_ORANGE);
 	input_report_key(dev, BTN_TR, pkt->tilt > GIP_JA_TILT_THRESHOLD);
 	input_report_abs(dev, ABS_Z, solo ? 255 : 0);
-	/* 257 = 65535/255 exactly, so this hits both endpoints precisely */
-	input_report_abs(dev, ABS_RX, pkt->whammy * 257);
+	input_report_abs(dev, ABS_RX, pkt->whammy > GIP_JA_WHAMMY_THRESHOLD ? 255 : 0);
 	input_report_abs(dev, ABS_RY, (s16)le16_to_cpu(pkt->joystick_y));
 	input_report_abs(dev, ABS_HAT0X, !!(buttons & GIP_JA_BTN_DPAD_R) -
 					 !!(buttons & GIP_JA_BTN_DPAD_L));
