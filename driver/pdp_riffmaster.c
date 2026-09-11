@@ -1,0 +1,300 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * Copyright (C) 2022 Severin von Wnuck-Lipinski <severinvonw@outlook.de>
+ * Copyright (C) 2023 Scott K Logan <logans@cottsay.net>
+ * Copyright (C) 2026 Dan Leehr <leehro@gmail.com>
+ *
+ * Split out from pdp_jaguar.c as a personal fork tuned specifically for the
+ * PDP Riffmaster (not the real Jaguar/Stratocaster) and RPCS3's default
+ * evdev bindings - not upstream-worthy, see gip_riffmaster_op_input() below
+ * for the rationale. pdp_jaguar.c itself is kept in this tree unmodified,
+ * for the real Jaguar/Stratocaster, but isn't built by this fork - see
+ * Kbuild/dkms.conf.
+ */
+
+#include <linux/module.h>
+
+#include "common.h"
+#include "../auth/auth.h"
+
+#define GIP_RM_NAME "PDP Riffmaster"
+
+/*
+ * Tilt (0-255) is reported as a plain digital button, thresholded here,
+ * to match RPCS3's default R1 source (BTN_TR is a digital button, not
+ * an axis - see rpcs3/Input/evdev_joystick_handler.cpp init_config()).
+ * This also matches how Rock Band actually uses tilt in-game: as a
+ * threshold gesture to activate Overdrive, not a continuous value.
+ */
+#define GIP_RM_TILT_THRESHOLD 128
+
+enum gip_riffmaster_button {
+	GIP_RM_BTN_MENU = BIT(2),
+	GIP_RM_BTN_VIEW = BIT(3),
+	GIP_RM_BTN_DPAD_U = BIT(8),
+	GIP_RM_BTN_DPAD_D = BIT(9),
+	GIP_RM_BTN_DPAD_L = BIT(10),
+	GIP_RM_BTN_DPAD_R = BIT(11),
+	/*
+	 * Documented as "solo fret flag / Riffmaster joystick click" on the
+	 * shared PDP.Xbox.Guitar.Jaguar protocol. On a real Jaguar/
+	 * Stratocaster this bit coincides with any lower/solo fret being
+	 * held; on the Riffmaster, which has no such correlation
+	 * requirement, it's simply the neck thumbstick's click button.
+	 * Report it as its own control either way rather than using it to
+	 * reinterpret fret state (see below) - useful on its own as a
+	 * bindable "solo" modifier button in frontends that model Rock Band
+	 * guitars that way (e.g. RPCS3's single "Solo Modifier" binding).
+	 */
+	GIP_RM_BTN_SOLO = BIT(14),
+};
+
+/*
+ * Fret state is read from the byte 5/6 upper and lower/solo bitmasks
+ * (frets_upper/frets_lower below), not the "flag" bits in the buttons
+ * word (old bits 4-7 and 12, disambiguated by bit 14 into upper vs.
+ * lower/solo row). Those flag bits are documented as unreliable ("not
+ * recommended") on any device, and on the PDP Riffmaster specifically,
+ * bit 14 is the neck thumbstick's click rather than a fret-row selector,
+ * so relying on it there misreports whichever fret is currently held as
+ * soon as the stick is clicked or bumped. The bitmasks below don't have
+ * this ambiguity.
+ */
+enum gip_riffmaster_fret_mask {
+	GIP_RM_FRET_GREEN = BIT(0),
+	GIP_RM_FRET_RED = BIT(1),
+	GIP_RM_FRET_YELLOW = BIT(2),
+	GIP_RM_FRET_BLUE = BIT(3),
+	GIP_RM_FRET_ORANGE = BIT(4),
+};
+
+struct gip_riffmaster_pkt_input {
+	__le16 buttons;
+	u8 tilt;
+	u8 whammy;
+	u8 pickup;		/* unused: no physical switch on this Riffmaster */
+	u8 frets_upper;
+	u8 frets_lower;
+	u8 autocal_light;
+	__le16 autocal_audio;
+	__le16 joystick_x;	/* unused: player doesn't use the neck stick */
+	__le16 joystick_y;	/* mapped to ABS_RY (RPCS3's pickup axis) */
+} __packed;
+
+struct gip_riffmaster {
+	struct gip_client *client;
+	struct gip_battery battery;
+	struct gip_auth auth;
+	struct gip_input input;
+};
+
+static int gip_riffmaster_init_input(struct gip_riffmaster *guitar)
+{
+	struct input_dev *dev = guitar->input.dev;
+	int err;
+
+	/*
+	 * Personal fork policy, not upstream-worthy: use the exact evdev
+	 * codes RPCS3's evdev_joystick_handler::init_config() binds by
+	 * default for each PS3 pad control, rather than generic/arbitrary
+	 * codes, so this device works in RPCS3 with zero manual rebinding.
+	 * See the same rationale note in gip_riffmaster_op_input() below.
+	 */
+	input_set_capability(dev, EV_KEY, BTN_MODE);
+	input_set_capability(dev, EV_KEY, BTN_START);
+	input_set_capability(dev, EV_KEY, BTN_SELECT);
+	input_set_capability(dev, EV_KEY, BTN_A);	/* green fret */
+	input_set_capability(dev, EV_KEY, BTN_B);	/* red fret */
+	input_set_capability(dev, EV_KEY, BTN_X);	/* blue fret */
+	input_set_capability(dev, EV_KEY, BTN_Y);	/* yellow fret */
+	input_set_capability(dev, EV_KEY, BTN_TL);	/* orange fret */
+	input_set_capability(dev, EV_KEY, BTN_TR);	/* tilt (digital, see above) */
+	input_set_abs_params(dev, ABS_Z, 0, 255, 0, 0);	/* solo modifier */
+	input_set_abs_params(dev, ABS_RX, -32768, 32767, 0, 0);	/* whammy */
+	input_set_abs_params(dev, ABS_RY, -32768, 32767, 0, 0);	/* stick Y (RPCS3's pickup axis) */
+	input_set_abs_params(dev, ABS_HAT0X, -1, 1, 0, 0);
+	input_set_abs_params(dev, ABS_HAT0Y, -1, 1, 0, 0);
+
+	err = input_register_device(dev);
+	if (err)
+		dev_err(&guitar->client->dev, "%s: register failed: %d\n",
+			__func__, err);
+
+	return err;
+}
+
+static int gip_riffmaster_op_battery(struct gip_client *client,
+				     enum gip_battery_type type,
+				     enum gip_battery_level level)
+{
+	struct gip_riffmaster *guitar = dev_get_drvdata(&client->dev);
+
+	gip_report_battery(&guitar->battery, type, level);
+
+	return 0;
+}
+
+static int gip_riffmaster_op_authenticate(struct gip_client *client,
+					  void *data, u32 len)
+{
+	struct gip_riffmaster *guitar = dev_get_drvdata(&client->dev);
+
+	return gip_auth_process_pkt(&guitar->auth, data, len);
+}
+
+static int gip_riffmaster_op_guide_button(struct gip_client *client, bool down)
+{
+	struct gip_riffmaster *guitar = dev_get_drvdata(&client->dev);
+
+	input_report_key(guitar->input.dev, BTN_MODE, down);
+	input_sync(guitar->input.dev);
+
+	return 0;
+}
+
+static int gip_riffmaster_op_input(struct gip_client *client, void *data, u32 len)
+{
+	struct gip_riffmaster *guitar = dev_get_drvdata(&client->dev);
+	struct gip_riffmaster_pkt_input *pkt = data;
+	struct input_dev *dev = guitar->input.dev;
+	u16 buttons;
+	u8 frets;
+	bool solo;
+
+	if (len < sizeof(*pkt))
+		return -EINVAL;
+
+	buttons = le16_to_cpu(pkt->buttons);
+
+	/*
+	 * Personal fork policy, not upstream-worthy: merge the upper and
+	 * lower/solo fret rows into a single 5-button "fret held, either
+	 * row" signal, and expose one "solo requested" modifier instead of
+	 * 10 separate fret codes. This matches frontends that model Rock
+	 * Band guitars with 5 frets + a single solo modifier rather than 10
+	 * distinct fret buttons (e.g. RPCS3's harmonix_rockband_guitar pad
+	 * type, which only exposes Cross/Circle/Square/Triangle/L1 for
+	 * frets and a single L2 "Solo Modifier"). The modifier reflects
+	 * either row physically being played (frets_lower != 0), so playing
+	 * the real solo row still works, with the thumbstick click as a
+	 * bonus manual shortcut.
+	 *
+	 * Everything below is reported on the exact evdev code RPCS3 binds
+	 * by default for the corresponding PS3 pad control (see init_config()
+	 * in rpcs3/Input/evdev_joystick_handler.cpp), so plugging this in and
+	 * selecting the "Rock Band Guitar" product type needs no rebinding:
+	 *   fret buttons -> BTN_A/B/X/Y/TL (Cross/Circle/Square/Triangle/L1)
+	 *   solo modifier -> ABS_Z, positive = active           (L2 default)
+	 *   tilt          -> BTN_TR, thresholded                (R1 default)
+	 *   whammy        -> ABS_RX, positive = pressed          (RS default)
+	 *     - EXPERIMENTAL: declared as a bipolar axis (-32768..32767)
+	 *       instead of unipolar (0..255/0..65535, both tried and had no
+	 *       in-game effect in RB3 despite RPCS3's own pad settings screen
+	 *       showing the raw signal moving correctly). RPCS3's evdev
+	 *       handler (GetButtonValues() in evdev_joystick_handler.cpp)
+	 *       takes a different code path for axes with a negative declared
+	 *       minimum (ScaledAxisInput) than for unipolar/"trigger" axes
+	 *       (ScaledInput) - only the unipolar path has been tested so
+	 *       far. Also matches the known-working Windows reference setup
+	 *       (RB4InstrumentMapper's ViGEmBus mode), which always presents
+	 *       whammy as part of a real Xbox 360 controller's stick report -
+	 *       necessarily bipolar/signed, never a raw unsigned value.
+	 *       Reported value stays non-negative (0 at idle); only the
+	 *       declared range's sign changed.
+	 *   pickup switch -> ABS_RY                                (RS default)
+	 * This particular Riffmaster has no physical pickup switch (unlike
+	 * the real Jaguar/Stratocaster, whose protocol byte 4 it reserves
+	 * anyway) - reading pkt->pickup here would just be dead, constant
+	 * data. The neck thumbstick's Y axis - unused by the player
+	 * otherwise - is reported on ABS_RY instead, standing in for a
+	 * pickup switch that doesn't exist on this hardware. Reported
+	 * as-is, unnegated; whichever direction ends up meaning what isn't
+	 * important here.
+	 */
+	frets = pkt->frets_upper | pkt->frets_lower;
+	solo = pkt->frets_lower || (buttons & GIP_RM_BTN_SOLO);
+
+	input_report_key(dev, BTN_START, buttons & GIP_RM_BTN_MENU);
+	input_report_key(dev, BTN_SELECT, buttons & GIP_RM_BTN_VIEW);
+	input_report_key(dev, BTN_A, frets & GIP_RM_FRET_GREEN);
+	input_report_key(dev, BTN_B, frets & GIP_RM_FRET_RED);
+	input_report_key(dev, BTN_Y, frets & GIP_RM_FRET_YELLOW);
+	input_report_key(dev, BTN_X, frets & GIP_RM_FRET_BLUE);
+	input_report_key(dev, BTN_TL, frets & GIP_RM_FRET_ORANGE);
+	input_report_key(dev, BTN_TR, pkt->tilt > GIP_RM_TILT_THRESHOLD);
+	input_report_abs(dev, ABS_Z, solo ? 255 : 0);
+	/* 128 keeps this well within the declared range's positive half */
+	input_report_abs(dev, ABS_RX, pkt->whammy * 128);
+	input_report_abs(dev, ABS_RY, (s16)le16_to_cpu(pkt->joystick_y));
+	input_report_abs(dev, ABS_HAT0X, !!(buttons & GIP_RM_BTN_DPAD_R) -
+					 !!(buttons & GIP_RM_BTN_DPAD_L));
+	input_report_abs(dev, ABS_HAT0Y, !!(buttons & GIP_RM_BTN_DPAD_D) -
+					 !!(buttons & GIP_RM_BTN_DPAD_U));
+	input_sync(dev);
+
+	return 0;
+}
+
+static int gip_riffmaster_probe(struct gip_client *client)
+{
+	struct gip_riffmaster *guitar;
+	int err;
+
+	guitar = devm_kzalloc(&client->dev, sizeof(*guitar), GFP_KERNEL);
+	if (!guitar)
+		return -ENOMEM;
+
+	guitar->client = client;
+
+	err = gip_set_power_mode(client, GIP_PWR_ON);
+	if (err)
+		return err;
+
+	err = gip_init_battery(&guitar->battery, client, GIP_RM_NAME);
+	if (err)
+		return err;
+
+	err = gip_auth_start_handshake(&guitar->auth, client);
+	if (err)
+		return err;
+
+	err = gip_init_input(&guitar->input, client, GIP_RM_NAME);
+	if (err)
+		return err;
+
+	err = gip_riffmaster_init_input(guitar);
+	if (err)
+		return err;
+
+	dev_set_drvdata(&client->dev, guitar);
+
+	return 0;
+}
+
+static struct gip_driver gip_riffmaster_driver = {
+	.name = "xone-gip-pdp-riffmaster",
+	/*
+	 * Still the same class string the real Jaguar/Stratocaster uses -
+	 * that's what the hardware itself announces over GIP, we don't get
+	 * to invent our own. pdp_jaguar.c isn't built by this fork (see
+	 * Kbuild/dkms.conf), so there's no other driver registered for this
+	 * class to race against.
+	 */
+	.class = "PDP.Xbox.Guitar.Jaguar",
+	.ops = {
+		.battery = gip_riffmaster_op_battery,
+		.authenticate = gip_riffmaster_op_authenticate,
+		.guide_button = gip_riffmaster_op_guide_button,
+		.input = gip_riffmaster_op_input,
+	},
+	.probe = gip_riffmaster_probe,
+};
+module_gip_driver(gip_riffmaster_driver);
+
+MODULE_ALIAS("gip:PDP.Xbox.Guitar.Jaguar");
+MODULE_AUTHOR("Severin von Wnuck-Lipinski <severinvonw@outlook.de>");
+MODULE_AUTHOR("Scott K Logan <logans@cottsay.net>");
+MODULE_AUTHOR("Dan Leehr <leehro@gmail.com>");
+MODULE_DESCRIPTION("xone GIP PDP Riffmaster driver");
+MODULE_VERSION("#VERSION#");
+MODULE_LICENSE("GPL");
