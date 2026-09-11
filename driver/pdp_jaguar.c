@@ -20,19 +20,33 @@ enum gip_jaguar_button {
 	GIP_JA_BTN_DPAD_R = BIT(11),
 };
 
-enum gip_jaguar_fret {
-	GIP_JA_FRET_GREEN = BIT(4),
-	GIP_JA_FRET_RED = BIT(5),
-	GIP_JA_FRET_BLUE = BIT(6),
-	GIP_JA_FRET_YELLOW = BIT(7),
-	GIP_JA_FRET_ORANGE = BIT(12),
-	GIP_JA_FRET_LOWER = BIT(14),
+/*
+ * Fret state is intentionally *not* read from the "flag" bits in the
+ * buttons word (old bits 4-7 and 12, with bit 14 selecting upper vs.
+ * lower/solo row). On a real Jaguar/Stratocaster those flag bits work
+ * fine, but they're documented as unreliable ("not recommended") and
+ * overlap with other input on compatible devices: on the PDP Riffmaster,
+ * which announces this same GIP class, bit 14 is the neck thumbstick's
+ * click button rather than a fret-row selector, so relying on it there
+ * misreports whichever fret is currently held as soon as the stick is
+ * clicked (or bumped). The upper/lower fret bitmasks below don't have
+ * this ambiguity and work identically on both devices.
+ */
+enum gip_jaguar_fret_mask {
+	GIP_JA_FRET_GREEN = BIT(0),
+	GIP_JA_FRET_RED = BIT(1),
+	GIP_JA_FRET_YELLOW = BIT(2),
+	GIP_JA_FRET_BLUE = BIT(3),
+	GIP_JA_FRET_ORANGE = BIT(4),
 };
 
 struct gip_jaguar_pkt_input {
 	__le16 buttons;
 	u8 tilt;
 	u8 whammy;
+	u8 pickup;
+	u8 frets_upper;
+	u8 frets_lower;
 } __packed;
 
 struct gip_jaguar {
@@ -108,36 +122,34 @@ static int gip_jaguar_op_input(struct gip_client *client, void *data, u32 len)
 	struct gip_jaguar_pkt_input *pkt = data;
 	struct input_dev *dev = guitar->input.dev;
 	u16 buttons;
-	bool lower;
 
 	if (len < sizeof(*pkt))
 		return -EINVAL;
 
 	buttons = le16_to_cpu(pkt->buttons);
-	lower = buttons & GIP_JA_FRET_LOWER;
 
 	input_report_key(dev, BTN_START, buttons & GIP_JA_BTN_MENU);
 	input_report_key(dev, BTN_SELECT, buttons & GIP_JA_BTN_VIEW);
 	input_report_key(dev, BTN_TRIGGER_HAPPY1,
-			 (buttons & GIP_JA_FRET_GREEN) && !lower);
+			 pkt->frets_upper & GIP_JA_FRET_GREEN);
 	input_report_key(dev, BTN_TRIGGER_HAPPY2,
-			 (buttons & GIP_JA_FRET_RED) && !lower);
+			 pkt->frets_upper & GIP_JA_FRET_RED);
 	input_report_key(dev, BTN_TRIGGER_HAPPY3,
-			 (buttons & GIP_JA_FRET_YELLOW) && !lower);
+			 pkt->frets_upper & GIP_JA_FRET_YELLOW);
 	input_report_key(dev, BTN_TRIGGER_HAPPY4,
-			 (buttons & GIP_JA_FRET_BLUE) && !lower);
+			 pkt->frets_upper & GIP_JA_FRET_BLUE);
 	input_report_key(dev, BTN_TRIGGER_HAPPY5,
-			 (buttons & GIP_JA_FRET_ORANGE) && !lower);
+			 pkt->frets_upper & GIP_JA_FRET_ORANGE);
 	input_report_key(dev, BTN_TRIGGER_HAPPY6,
-			 (buttons & GIP_JA_FRET_GREEN) && lower);
+			 pkt->frets_lower & GIP_JA_FRET_GREEN);
 	input_report_key(dev, BTN_TRIGGER_HAPPY7,
-			 (buttons & GIP_JA_FRET_RED) && lower);
+			 pkt->frets_lower & GIP_JA_FRET_RED);
 	input_report_key(dev, BTN_TRIGGER_HAPPY8,
-			 (buttons & GIP_JA_FRET_YELLOW) && lower);
+			 pkt->frets_lower & GIP_JA_FRET_YELLOW);
 	input_report_key(dev, BTN_TRIGGER_HAPPY9,
-			 (buttons & GIP_JA_FRET_BLUE) && lower);
+			 pkt->frets_lower & GIP_JA_FRET_BLUE);
 	input_report_key(dev, BTN_TRIGGER_HAPPY10,
-			 (buttons & GIP_JA_FRET_ORANGE) && lower);
+			 pkt->frets_lower & GIP_JA_FRET_ORANGE);
 	input_report_abs(dev, ABS_Y, pkt->whammy);
 	input_report_abs(dev, ABS_Z, pkt->tilt);
 	input_report_abs(dev, ABS_HAT0X, !!(buttons & GIP_JA_BTN_DPAD_R) -
