@@ -22,6 +22,14 @@
  */
 #define GIP_RM_TILT_THRESHOLD 128
 
+/* No pickup switch on this Riffmaster. The real switch has 5 discrete
+ * detents that hold their position; the neck stick springs back to center,
+ * so it's read as a stepper instead: a flick past the threshold advances
+ * the position by one detent, held until the next flick.
+ */
+#define GIP_RM_PICKUP_POSITIONS 5
+#define GIP_RM_PICKUP_STICK_THRESHOLD 16384
+
 enum gip_riffmaster_button {
 	GIP_RM_BTN_MENU = BIT(2),
 	GIP_RM_BTN_VIEW = BIT(3),
@@ -59,7 +67,14 @@ struct gip_riffmaster {
 	struct gip_battery battery;
 	struct gip_auth auth;
 	struct gip_input input;
+	u8 pickup_position;		/* 0..GIP_RM_PICKUP_POSITIONS-1 */
+	bool pickup_stick_deflected;	/* edge-detect for the flick gesture */
 };
+
+static s16 gip_riffmaster_pickup_value(u8 position)
+{
+	return (s32)position * 65535 / (GIP_RM_PICKUP_POSITIONS - 1) - 32768;
+}
 
 static int gip_riffmaster_init_input(struct gip_riffmaster *guitar)
 {
@@ -129,6 +144,8 @@ static int gip_riffmaster_op_input(struct gip_client *client, void *data, u32 le
 	u16 buttons;
 	u8 frets;
 	bool solo;
+	s16 stick_y;
+	bool deflected;
 
 	if (len < sizeof(*pkt))
 		return -EINVAL;
@@ -155,8 +172,18 @@ static int gip_riffmaster_op_input(struct gip_client *client, void *data, u32 le
 	input_report_abs(dev, ABS_Z, solo ? 255 : 0);
 	/* Whammy: not yet confirmed working in-game (RB3/RPCS3). */
 	input_report_abs(dev, ABS_RX, pkt->whammy * 128);
-	/* No pickup switch, attempted neck thumbstick, not working great */
-	input_report_abs(dev, ABS_RY, (s16)le16_to_cpu(pkt->joystick_y));
+	/* Pickup switch: see GIP_RM_PICKUP_POSITIONS comment above. */
+	stick_y = (s16)le16_to_cpu(pkt->joystick_y);
+	deflected = stick_y > GIP_RM_PICKUP_STICK_THRESHOLD ||
+		    stick_y < -GIP_RM_PICKUP_STICK_THRESHOLD;
+	if (deflected && !guitar->pickup_stick_deflected) {
+		if (stick_y > 0 && guitar->pickup_position < GIP_RM_PICKUP_POSITIONS - 1)
+			guitar->pickup_position++;
+		else if (stick_y < 0 && guitar->pickup_position > 0)
+			guitar->pickup_position--;
+	}
+	guitar->pickup_stick_deflected = deflected;
+	input_report_abs(dev, ABS_RY, gip_riffmaster_pickup_value(guitar->pickup_position));
 	input_report_abs(dev, ABS_HAT0X, !!(buttons & GIP_RM_BTN_DPAD_R) -
 					 !!(buttons & GIP_RM_BTN_DPAD_L));
 	input_report_abs(dev, ABS_HAT0Y, !!(buttons & GIP_RM_BTN_DPAD_D) -
@@ -176,6 +203,7 @@ static int gip_riffmaster_probe(struct gip_client *client)
 		return -ENOMEM;
 
 	guitar->client = client;
+	guitar->pickup_position = GIP_RM_PICKUP_POSITIONS / 2;
 
 	err = gip_set_power_mode(client, GIP_PWR_ON);
 	if (err)
