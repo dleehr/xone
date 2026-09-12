@@ -2,6 +2,7 @@
 /*
  * Copyright (C) 2022 Severin von Wnuck-Lipinski <severinvonw@outlook.de>
  * Copyright (C) 2023 Scott K Logan <logans@cottsay.net>
+ * Copyright (C) 2026 Dan Leehr <leehro@gmail.com>
  *
  * Split out from pdp_jaguar.c as a personal fork tuned specifically for the
  * PDP Riffmaster (not the real Jaguar/Stratocaster) and RPCS3's default
@@ -293,6 +294,7 @@ module_gip_driver(gip_riffmaster_driver);
 MODULE_ALIAS("gip:PDP.Xbox.Guitar.Jaguar");
 MODULE_AUTHOR("Severin von Wnuck-Lipinski <severinvonw@outlook.de>");
 MODULE_AUTHOR("Scott K Logan <logans@cottsay.net>");
+MODULE_AUTHOR("Dan Leehr <leehro@gmail.com>");
 MODULE_DESCRIPTION("xone GIP PDP Riffmaster driver");
 MODULE_VERSION("#VERSION#");
 MODULE_LICENSE("GPL");
