@@ -71,9 +71,7 @@ struct gip_riffmaster {
 	bool pickup_stick_deflected;	/* edge-detect for the flick gesture */
 };
 
-/* Chosen so RPCS3's axis normalization reproduces the real PS3/Wii
- * guitar notch bytes (PlasticBand's Rock Band 5-Fret Guitar notes).
- */
+/* Chosen so RPCS3's axis normalization matches the 5-way pickup switch */
 static const s16 gip_riffmaster_pickup_values[GIP_RM_PICKUP_POSITIONS] = {
 	-26347, -13233, 5784, 12980, 26085,
 };
