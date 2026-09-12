@@ -175,8 +175,13 @@ static int gip_riffmaster_op_input(struct gip_client *client, void *data, u32 le
 	input_report_key(dev, BTN_TL, frets & GIP_RM_FRET_ORANGE);
 	input_report_key(dev, BTN_TR, pkt->tilt > GIP_RM_TILT_THRESHOLD);
 	input_report_abs(dev, ABS_Z, solo ? 255 : 0);
-	/* Whammy: not pressed -> 0, fully pressed -> ~32767. */
-	input_report_abs(dev, ABS_RX, (s32)pkt->whammy * 32767 / 255);
+	/* Whammy: testing whether a distinct (non-zero) at-rest value matters -
+	 * not pressed (0) -> full negative extreme, 1-255 -> ~1..32767.
+	 */
+	if (pkt->whammy == 0)
+		input_report_abs(dev, ABS_RX, -32768);
+	else
+		input_report_abs(dev, ABS_RX, 1 + (s32)(pkt->whammy - 1) * 32766 / 254);
 	/* Pickup switch: see GIP_RM_PICKUP_POSITIONS comment above. */
 	stick_y = (s16)le16_to_cpu(pkt->joystick_y);
 	deflected = stick_y > GIP_RM_PICKUP_STICK_THRESHOLD ||
