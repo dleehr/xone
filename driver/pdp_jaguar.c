@@ -11,15 +11,6 @@
 
 #define GIP_JA_NAME "PDP Rock Band 4 Jaguar"
 
-/*
- * Tilt (0-255) is reported as a plain digital button, thresholded here,
- * to match RPCS3's default R1 source (BTN_TR is a digital button, not
- * an axis - see rpcs3/Input/evdev_joystick_handler.cpp init_config()).
- * This also matches how Rock Band actually uses tilt in-game: as a
- * threshold gesture to activate Overdrive, not a continuous value.
- */
-#define GIP_JA_TILT_THRESHOLD 128
-
 enum gip_jaguar_button {
 	GIP_JA_BTN_MENU = BIT(2),
 	GIP_JA_BTN_VIEW = BIT(3),
@@ -27,49 +18,21 @@ enum gip_jaguar_button {
 	GIP_JA_BTN_DPAD_D = BIT(9),
 	GIP_JA_BTN_DPAD_L = BIT(10),
 	GIP_JA_BTN_DPAD_R = BIT(11),
-	/*
-	 * Documented as "solo fret flag / Riffmaster joystick click". On a
-	 * real Jaguar/Stratocaster this bit coincides with any lower/solo
-	 * fret being held; on the Riffmaster, which has no such correlation
-	 * requirement, it's simply the neck thumbstick's click button. Report
-	 * it as its own control either way rather than using it to reinterpret
-	 * fret state (see below) - useful on its own as a bindable "solo"
-	 * modifier button in frontends that model Rock Band guitars that way
-	 * (e.g. RPCS3's single "Solo Modifier" binding).
-	 */
-	GIP_JA_BTN_SOLO = BIT(14),
 };
 
-/*
- * Fret state is read from the byte 5/6 upper and lower/solo bitmasks
- * (frets_upper/frets_lower below), not the "flag" bits in the buttons
- * word (old bits 4-7 and 12, disambiguated by bit 14 into upper vs.
- * lower/solo row). Those flag bits are documented as unreliable ("not
- * recommended") on any device, and on the PDP Riffmaster specifically,
- * bit 14 is the neck thumbstick's click rather than a fret-row selector,
- * so relying on it there misreports whichever fret is currently held as
- * soon as the stick is clicked or bumped. The bitmasks below don't have
- * this ambiguity on either device.
- */
-enum gip_jaguar_fret_mask {
-	GIP_JA_FRET_GREEN = BIT(0),
-	GIP_JA_FRET_RED = BIT(1),
-	GIP_JA_FRET_YELLOW = BIT(2),
-	GIP_JA_FRET_BLUE = BIT(3),
-	GIP_JA_FRET_ORANGE = BIT(4),
+enum gip_jaguar_fret {
+	GIP_JA_FRET_GREEN = BIT(4),
+	GIP_JA_FRET_RED = BIT(5),
+	GIP_JA_FRET_BLUE = BIT(6),
+	GIP_JA_FRET_YELLOW = BIT(7),
+	GIP_JA_FRET_ORANGE = BIT(12),
+	GIP_JA_FRET_LOWER = BIT(14),
 };
 
 struct gip_jaguar_pkt_input {
 	__le16 buttons;
 	u8 tilt;
 	u8 whammy;
-	u8 pickup;		/* unused: no physical switch on this Riffmaster */
-	u8 frets_upper;
-	u8 frets_lower;
-	u8 autocal_light;
-	__le16 autocal_audio;
-	__le16 joystick_x;	/* unused: player doesn't use the neck stick */
-	__le16 joystick_y;	/* mapped to ABS_RY (RPCS3's pickup axis) */
 } __packed;
 
 struct gip_jaguar {
@@ -84,25 +47,21 @@ static int gip_jaguar_init_input(struct gip_jaguar *guitar)
 	struct input_dev *dev = guitar->input.dev;
 	int err;
 
-	/*
-	 * Personal fork policy, not upstream-worthy: use the exact evdev
-	 * codes RPCS3's evdev_joystick_handler::init_config() binds by
-	 * default for each PS3 pad control, rather than generic/arbitrary
-	 * codes, so this device works in RPCS3 with zero manual rebinding.
-	 * See the same rationale note in gip_jaguar_op_input() below.
-	 */
 	input_set_capability(dev, EV_KEY, BTN_MODE);
 	input_set_capability(dev, EV_KEY, BTN_START);
 	input_set_capability(dev, EV_KEY, BTN_SELECT);
-	input_set_capability(dev, EV_KEY, BTN_A);	/* green fret */
-	input_set_capability(dev, EV_KEY, BTN_B);	/* red fret */
-	input_set_capability(dev, EV_KEY, BTN_X);	/* blue fret */
-	input_set_capability(dev, EV_KEY, BTN_Y);	/* yellow fret */
-	input_set_capability(dev, EV_KEY, BTN_TL);	/* orange fret */
-	input_set_capability(dev, EV_KEY, BTN_TR);	/* tilt (digital, see above) */
-	input_set_abs_params(dev, ABS_Z, 0, 255, 0, 0);	/* solo modifier */
-	input_set_abs_params(dev, ABS_RX, -32768, 32767, 0, 0);	/* whammy */
-	input_set_abs_params(dev, ABS_RY, -32768, 32767, 0, 0);	/* stick Y (RPCS3's pickup axis) */
+	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY1);
+	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY2);
+	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY3);
+	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY4);
+	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY5);
+	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY6);
+	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY7);
+	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY8);
+	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY9);
+	input_set_capability(dev, EV_KEY, BTN_TRIGGER_HAPPY10);
+	input_set_abs_params(dev, ABS_Y, 0, 255, 0, 0);
+	input_set_abs_params(dev, ABS_Z, 0, 255, 0, 0);
 	input_set_abs_params(dev, ABS_HAT0X, -1, 1, 0, 0);
 	input_set_abs_params(dev, ABS_HAT0Y, -1, 1, 0, 0);
 
@@ -149,74 +108,38 @@ static int gip_jaguar_op_input(struct gip_client *client, void *data, u32 len)
 	struct gip_jaguar_pkt_input *pkt = data;
 	struct input_dev *dev = guitar->input.dev;
 	u16 buttons;
-	u8 frets;
-	bool solo;
+	bool lower;
 
 	if (len < sizeof(*pkt))
 		return -EINVAL;
 
 	buttons = le16_to_cpu(pkt->buttons);
-
-	/*
-	 * Personal fork policy, not upstream-worthy: merge the upper and
-	 * lower/solo fret rows into a single 5-button "fret held, either
-	 * row" signal, and expose one "solo requested" modifier instead of
-	 * 10 separate fret codes. This matches frontends that model Rock
-	 * Band guitars with 5 frets + a single solo modifier rather than 10
-	 * distinct fret buttons (e.g. RPCS3's harmonix_rockband_guitar pad
-	 * type, which only exposes Cross/Circle/Square/Triangle/L1 for
-	 * frets and a single L2 "Solo Modifier"). The modifier reflects
-	 * either row physically being played (frets_lower != 0), so playing
-	 * the real solo row still works, with the thumbstick click as a
-	 * bonus manual shortcut.
-	 *
-	 * Everything below is reported on the exact evdev code RPCS3 binds
-	 * by default for the corresponding PS3 pad control (see init_config()
-	 * in rpcs3/Input/evdev_joystick_handler.cpp), so plugging this in and
-	 * selecting the "Rock Band Guitar" product type needs no rebinding:
-	 *   fret buttons -> BTN_A/B/X/Y/TL (Cross/Circle/Square/Triangle/L1)
-	 *   solo modifier -> ABS_Z, positive = active           (L2 default)
-	 *   tilt          -> BTN_TR, thresholded                (R1 default)
-	 *   whammy        -> ABS_RX, positive = pressed          (RS default)
-	 *     - EXPERIMENTAL: declared as a bipolar axis (-32768..32767)
-	 *       instead of unipolar (0..255/0..65535, both tried and had no
-	 *       in-game effect in RB3 despite RPCS3's own pad settings screen
-	 *       showing the raw signal moving correctly). RPCS3's evdev
-	 *       handler (GetButtonValues() in evdev_joystick_handler.cpp)
-	 *       takes a different code path for axes with a negative declared
-	 *       minimum (ScaledAxisInput) than for unipolar/"trigger" axes
-	 *       (ScaledInput) - only the unipolar path has been tested so
-	 *       far. Also matches the known-working Windows reference setup
-	 *       (RB4InstrumentMapper's ViGEmBus mode), which always presents
-	 *       whammy as part of a real Xbox 360 controller's stick report -
-	 *       necessarily bipolar/signed, never a raw unsigned value.
-	 *       Reported value stays non-negative (0 at idle); only the
-	 *       declared range's sign changed.
-	 *   pickup switch -> ABS_RY                                (RS default)
-	 * This particular Riffmaster has no physical pickup switch (unlike
-	 * the real Jaguar/Stratocaster, whose protocol byte 4 it reserves
-	 * anyway) - reading pkt->pickup here would just be dead, constant
-	 * data. The neck thumbstick's Y axis - unused by the player
-	 * otherwise - is reported on ABS_RY instead, standing in for a
-	 * pickup switch that doesn't exist on this hardware. Reported
-	 * as-is, unnegated; whichever direction ends up meaning what isn't
-	 * important here.
-	 */
-	frets = pkt->frets_upper | pkt->frets_lower;
-	solo = pkt->frets_lower || (buttons & GIP_JA_BTN_SOLO);
+	lower = buttons & GIP_JA_FRET_LOWER;
 
 	input_report_key(dev, BTN_START, buttons & GIP_JA_BTN_MENU);
 	input_report_key(dev, BTN_SELECT, buttons & GIP_JA_BTN_VIEW);
-	input_report_key(dev, BTN_A, frets & GIP_JA_FRET_GREEN);
-	input_report_key(dev, BTN_B, frets & GIP_JA_FRET_RED);
-	input_report_key(dev, BTN_Y, frets & GIP_JA_FRET_YELLOW);
-	input_report_key(dev, BTN_X, frets & GIP_JA_FRET_BLUE);
-	input_report_key(dev, BTN_TL, frets & GIP_JA_FRET_ORANGE);
-	input_report_key(dev, BTN_TR, pkt->tilt > GIP_JA_TILT_THRESHOLD);
-	input_report_abs(dev, ABS_Z, solo ? 255 : 0);
-	/* 128 keeps this well within the declared range's positive half */
-	input_report_abs(dev, ABS_RX, pkt->whammy * 128);
-	input_report_abs(dev, ABS_RY, (s16)le16_to_cpu(pkt->joystick_y));
+	input_report_key(dev, BTN_TRIGGER_HAPPY1,
+			 (buttons & GIP_JA_FRET_GREEN) && !lower);
+	input_report_key(dev, BTN_TRIGGER_HAPPY2,
+			 (buttons & GIP_JA_FRET_RED) && !lower);
+	input_report_key(dev, BTN_TRIGGER_HAPPY3,
+			 (buttons & GIP_JA_FRET_YELLOW) && !lower);
+	input_report_key(dev, BTN_TRIGGER_HAPPY4,
+			 (buttons & GIP_JA_FRET_BLUE) && !lower);
+	input_report_key(dev, BTN_TRIGGER_HAPPY5,
+			 (buttons & GIP_JA_FRET_ORANGE) && !lower);
+	input_report_key(dev, BTN_TRIGGER_HAPPY6,
+			 (buttons & GIP_JA_FRET_GREEN) && lower);
+	input_report_key(dev, BTN_TRIGGER_HAPPY7,
+			 (buttons & GIP_JA_FRET_RED) && lower);
+	input_report_key(dev, BTN_TRIGGER_HAPPY8,
+			 (buttons & GIP_JA_FRET_YELLOW) && lower);
+	input_report_key(dev, BTN_TRIGGER_HAPPY9,
+			 (buttons & GIP_JA_FRET_BLUE) && lower);
+	input_report_key(dev, BTN_TRIGGER_HAPPY10,
+			 (buttons & GIP_JA_FRET_ORANGE) && lower);
+	input_report_abs(dev, ABS_Y, pkt->whammy);
+	input_report_abs(dev, ABS_Z, pkt->tilt);
 	input_report_abs(dev, ABS_HAT0X, !!(buttons & GIP_JA_BTN_DPAD_R) -
 					 !!(buttons & GIP_JA_BTN_DPAD_L));
 	input_report_abs(dev, ABS_HAT0Y, !!(buttons & GIP_JA_BTN_DPAD_D) -
